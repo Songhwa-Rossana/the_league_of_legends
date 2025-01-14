@@ -4,35 +4,58 @@ import argparse
 import numpy as np
 import cv2 as cv
 
+import opencv_zoo.models as cv_models # TODO Put this more correct
+
+# Valid combinations of backends and targets
+backend_target_pairs = [
+    [cv.dnn.DNN_BACKEND_OPENCV, cv.dnn.DNN_TARGET_CPU],
+    [cv.dnn.DNN_BACKEND_CUDA,   cv.dnn.DNN_TARGET_CUDA],
+    [cv.dnn.DNN_BACKEND_CUDA,   cv.dnn.DNN_TARGET_CUDA_FP16],
+    [cv.dnn.DNN_BACKEND_TIMVX,  cv.dnn.DNN_TARGET_NPU],
+    [cv.dnn.DNN_BACKEND_CANN,   cv.dnn.DNN_TARGET_NPU]
+]
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--database_dir', '-db', type=str, default='./database')
-parser.add_argument('--face_detection_model', '-fd', type=str, required=True)
-parser.add_argument('--face_recognition_model', '-fr', type=str, required=True)
+parser.add_argument('--palm_detection_model', '-fd', type=str, default='./palm_detection_mediapipe_2023feb.onnx')
+#parser.add_argument('--face_recognition_model', '-fr', type=str, required=True)
+parser.add_argument('--backend_target', '-bt', type=int, default=0,
+                    help='''Choose one of the backend-target pair to run this demo:
+                        {:d}: (default) OpenCV implementation + CPU,
+                        {:d}: CUDA + GPU (CUDA),
+                        {:d}: CUDA + GPU (CUDA FP16),
+                        {:d}: TIM-VX + NPU,
+                        {:d}: CANN + NPU
+                    '''.format(*[x for x in range(len(backend_target_pairs))]))
+parser.add_argument('--score_threshold', type=float, default=0.8,
+                    help='Usage: Set the minimum needed confidence for the model to identify a palm, defaults to 0.8. Smaller values may result in faster detection, but will limit accuracy. Filter out faces of confidence < conf_threshold. An empirical score threshold for the quantized model is 0.49.')
+parser.add_argument('--nms_threshold', type=float, default=0.3,
+                    help='Usage: Suppress bounding boxes of iou >= nms_threshold. Default = 0.3.')
 args = parser.parse_args()
 
-def detect_face(detector, image):
+def detect_palm(detector, image):
     ''' Run face detection on input image.
 
     Paramters:
-        detector - an instance of cv.FaceDetectorYN
+        detector - an instance of cv.MPPalmDet
         image    - a single image read using cv.imread
 
     Returns:
         faces    - a np.array of shape [n, 15]. If n = 0, return an empty list.
     '''
-    faces = []
+    palms = []
     ### TODO: your code starts here
-
+    palms = detector.infer(image) # [x1, y1, x2, y2, landmarks...]
     ### your code ends here
-    return faces
+    return palms
 
 def extract_feature(recognizer, image, faces):
     ''' Run face alignment on the input image & face bounding boxes; Extract features from the aligned faces.
 
     Parameters:
-        recognizer - an instance of cv.FaceRecognizerSF
+        recognizer - an instance of MPPalmDet
         image      - a single image read using cv.imread
-        faces      - the return of detect_face
+        faces      - the return of detect_palm
 
     Returns:
         features   - a length-n list of extracted features. If n = 0, return an empty list.
@@ -40,6 +63,7 @@ def extract_feature(recognizer, image, faces):
     features = []
     ### TODO: your code starts here
 
+    # TODO Check if is valid
     ### your code ends here
     return features
 
@@ -64,7 +88,7 @@ def match(recognizer, feature1, feature2, dis_type=1):
     return isMatched
 
 def load_database(database_path, detector, recognizer):
-    ''' Load database from the given database_path into a dictionary. It tries to load extracted features first, and call detect_face & extract_feature to get features from images (*.jpg, *.png).
+    ''' Load database from the given database_path into a dictionary. It tries to load extracted features first, and call detect_palm & extract_feature to get features from images (*.jpg, *.png).
 
     Parameters:
         database_path - path to the database directory
@@ -90,8 +114,8 @@ def load_database(database_path, detector, recognizer):
             identity = filename[:-4]
             if identity not in db_features:
                 image = cv.imread(os.path.join(database_path, filename))
-                faces = detect_face(detector, image)
-                features = extract_feature(recognizer, image, faces)
+                faces = detect_palm(detector, image)
+                features = [] #extract_feature(recognizer, image, faces)
                 if len(features) > 0:
                     db_features[identity] = features[0]
                     np.save(os.path.join(database_path, '{}.npy'.format(identity)), features[0])
@@ -99,26 +123,38 @@ def load_database(database_path, detector, recognizer):
     print('Database: {} loaded in total, {} loaded from .npy, {} loaded from images.'.format(cnt, npy_cnt, cnt-npy_cnt))
     return db_features
 
-def visualize(image, faces, identities, fps, box_color=(0, 255, 0), text_color=(0, 0, 255)):
+def visualize(image, palms, identities, fps, box_color=(0, 255, 0), text_color=(0, 0, 255)):
     output = image.copy()
 
     # put fps in top-left corner
     cv.putText(output, 'FPS: {:.2f}'.format(fps), (0, 15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
-    for face, identity in zip(faces, identities):
+    for palm_landmarks, identity in zip(palms, identities):
         # draw bounding box
-        bbox = face[0:4].astype(np.int32)
-        cv.rectangle(output, (bbox[0], bbox[1]), (bbox[0]+bbox[2], bbox[1]+bbox[3]), box_color, 2)
+        bbox = palm_landmarks[0:4].astype(np.int32)
+        cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), box_color, 2)
+        # draw points
+        palm_landmarks = palm_landmarks[4:-1].astype(np.int32)
+        palm_landmarks = palm_landmarks.reshape(-1, 2)
+
+        for p in palm_landmarks:
+            cv.circle(output, p, 2, (0, 0, 255), 2) # TODO Add a color
         # put identity
         cv.putText(output, '{}'.format(identity), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
     return output
 
 if __name__ == '__main__':
-    # Initialize FaceDetectorYN
-    detector = cv.FaceDetectorYN.create(''' parameters for initialization ''')
+    backend_id = backend_target_pairs[args.backend_target][0]
+    target_id = backend_target_pairs[args.backend_target][1]
+    # Initialize MPPalmDet
+    detector = cv_models.MPPalmDet(modelPath=args.palm_detection_model,
+                      nmsThreshold=args.nms_threshold,
+                      scoreThreshold=args.score_threshold,
+                      backendId=backend_id,
+                      targetId=target_id)
     # Initialize FaceRecognizerSF
-    recognizer = cv.FaceRecognizerSF.create(''' parameters for initialization ''')
+    recognizer = lambda x: x #cv.FaceRecognizerSF.create(''' parameters for initialization ''')
 
     # Load database
     database = load_database(args.database_dir, detector, recognizer)
@@ -139,24 +175,24 @@ if __name__ == '__main__':
 
         tm.start()
         # detect faces
-        faces = detect_face(detector, frame)
+        palms = detect_palm(detector, frame)
         # extract features
-        features = extract_feature(recognizer, frame, faces)
+        features = palms #extract_feature(recognizer, frame, faces)
         # match detected faces with database
         identities = []
         for feature in features:
             isMatched = False
-            for identity, db_feature in database.items():
+            """for identity, db_feature in database.items():
                 isMatched = match(recognizer, feature, db_feature)
                 if isMatched:
                     identities.append(identity)
-                    break
+                    break"""
             if not isMatched:
                 identities.append('Unknown')
         tm.stop()
 
         # Draw results on the input image
-        frame = visualize(frame, faces, identities, tm.getFPS())
+        frame = visualize(frame, palms, identities, tm.getFPS())
 
         # Visualize results in a new Window
         cv.imshow('Face recognition system', frame)
