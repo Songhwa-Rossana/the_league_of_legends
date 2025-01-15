@@ -6,7 +6,6 @@ import cv2 as cv
 
 import opencv_zoo.models as cv_models # TODO Put this more correct
 from utils import palm_rots, get_palm_params, prompt_text_user
-from skimage.feature import hog
 
 # Valid combinations of backends and targets
 backend_target_pairs = [
@@ -79,10 +78,10 @@ def extract_feature(recognizer, image, palms):
             continue
 
         palm_image_gray = cv.cvtColor(palm_image, cv.COLOR_BGR2GRAY)
-        palm_image_gray = palm_image_gray.astype(np.float32) / 255.0
         palm_image_gray = cv.resize(palm_image_gray, recognizer.winSize)
-        #feature = recognizer.compute(palm_image_gray)
-        feature = hog(palm_image_gray, block_norm='L2-Hys', pixels_per_cell=(16,16), cells_per_block=(2,2), visualize=False)
+        feature = recognizer.compute(palm_image_gray)
+        feature = feature / np.linalg.norm(feature)
+
         features.append(feature)
     # TODO Check if is valid
     ### your code ends here
@@ -100,7 +99,7 @@ def match(recognizer, feature1, feature2, dis_type=1):
     Returns:
         isMatched  - True if feature1 and feature2 are the same identity; False if different
     '''
-    l2_threshold = 10 #1.128
+    l2_threshold = 100 #1.128
     cosine_threshold = 0.363
     isMatched = False
     ### TODO: your code starts here
@@ -196,14 +195,23 @@ if __name__ == '__main__':
     hog_params = {
                     'cell_size': (2, 2),      # h x w in pixels
                     'block_size': (16, 16),         # h x w in cells
-                    'win_size': (64, 64),
+                    'win_size': (128, 128),
                     'num_bins': 8
                 }
-    recognizer = cv.HOGDescriptor(
+    """recognizer = cv.HOGDescriptor(
                             _winSize=(hog_params['win_size'][1] * hog_params['cell_size'][1],
                                     hog_params['win_size'][0] * hog_params['cell_size'][0]),
                             _blockSize=(hog_params['block_size'][1] * hog_params['cell_size'][1],
                                         hog_params['block_size'][0] * hog_params['cell_size'][0]),
+                            _blockStride=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
+                            _cellSize=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
+                            _nbins=hog_params['num_bins']
+                        )"""
+    recognizer = cv.HOGDescriptor(
+                            _winSize=(hog_params['win_size'][1],
+                                    hog_params['win_size'][0]),
+                            _blockSize=(hog_params['block_size'][1] ,
+                                        hog_params['block_size'][0] ),
                             _blockStride=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
                             _cellSize=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
                             _nbins=hog_params['num_bins']
@@ -242,7 +250,7 @@ if __name__ == '__main__':
             cand_identity_dist = None
 
             # Check that hand rotation is within allowed range
-            if np.abs(palm[-1]) < rot_threshold:
+            if True: #np.abs(palm[-1]) < rot_threshold:
                 print(np.abs(palm[-1]))
                 isValid = True
 
