@@ -79,9 +79,10 @@ def extract_feature(recognizer, image, palms):
             continue
 
         palm_image_gray = cv.cvtColor(palm_image, cv.COLOR_BGR2GRAY)
+        palm_image_gray = palm_image_gray.astype(np.float32) / 255.0
         palm_image_gray = cv.resize(palm_image_gray, recognizer.winSize)
         #feature = recognizer.compute(palm_image_gray)
-        feature = hog(palm_image_gray, pixels_per_cell=(16,16), cells_per_block=(2,2), visualize= False)
+        feature = hog(palm_image_gray, block_norm='L2-Hys', pixels_per_cell=(16,16), cells_per_block=(2,2), visualize=False)
         features.append(feature)
     # TODO Check if is valid
     ### your code ends here
@@ -99,7 +100,7 @@ def match(recognizer, feature1, feature2, dis_type=1):
     Returns:
         isMatched  - True if feature1 and feature2 are the same identity; False if different
     '''
-    l2_threshold = 1.128
+    l2_threshold = 10 #1.128
     cosine_threshold = 0.363
     isMatched = False
     ### TODO: your code starts here
@@ -108,7 +109,7 @@ def match(recognizer, feature1, feature2, dis_type=1):
         if dist < cosine_threshold:
             isMatched = True
     elif dis_type == 1: # l2 distance
-        dist = np.sqrt(np.sum(feature1 ** 2  - feature2 ** 2))
+        dist = np.linalg.norm(feature1 - feature2, ord=2)
         if dist < l2_threshold:
             isMatched = True
     else:
@@ -164,7 +165,7 @@ def visualize(image, palms, identities, valids, fps, valid_box_color=(0, 255, 0)
         bbox, palm_landmarks, palm_rot = get_palm_params(palm)
         #bbox = palm[0:4].astype(np.int32)
 
-        if valid:
+        if not valid:
             cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), non_valid_box_color, 2)
             # Prompt the user to put the hand toward the camera
             cv.putText(output, 'Put hand vertically', (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
@@ -234,37 +235,33 @@ if __name__ == '__main__':
         # match detected faces with database
         identities = []
         valids = []
-        for feature in features:
+        for palm, feature in zip(palms, features):
             isMatched = False
             isValid = False
             cand_identity = None
             cand_identity_dist = None
 
             # Check that hand rotation is within allowed range
-            if np.abs(feature[-1]) > rot_threshold:
+            if np.abs(palm[-1]) < rot_threshold:
+                print(np.abs(palm[-1]))
                 isValid = True
 
                 # Match palmprint with all the palmsprints in the database, and keep the closest one
                 for identity, db_feature in database.items():
                     anyMatched, dist = match(recognizer, feature, db_feature)
+                    print(f'identity: {identity}, dist: {dist}')
                     if anyMatched:
-                        if cand_identity_dist is None or dist < cand_identity_dist:
+                        if (cand_identity_dist is None) or (dist < cand_identity_dist):
                             cand_identity = identity
                             cand_identity_dist = dist
                         isMatched = True
-                identities.append(cand_identity)
                 
             valids.append(isValid)
             if not isMatched:
                 identities.append('Unknown')
+            else:
+                identities.append(cand_identity)
         tm.stop()
-
-        """# Save new identity mode
-        if key == ord('s'):
-            if len(features) == 1:
-                new_name = prompt_text_user('Please enter identity\'s name: ')
-
-                if new_name:"""
 
         # Draw results on the input image
         frame = visualize(frame, palms, identities, valids, tm.getFPS())
