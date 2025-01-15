@@ -5,7 +5,8 @@ import numpy as np
 import cv2 as cv
 
 import opencv_zoo.models as cv_models # TODO Put this more correct
-from utils import palm_rots
+from utils import palm_rots, get_palm_params, prompt_text_user
+from skimage.feature import hog
 
 # Valid combinations of backends and targets
 backend_target_pairs = [
@@ -56,23 +57,35 @@ def detect_palm(detector, image):
     ### your code ends here
     return palms
 
-def extract_feature(recognizer, image, faces):
+def extract_feature(recognizer, image, palms):
     ''' Run face alignment on the input image & face bounding boxes; Extract features from the aligned faces.
 
     Parameters:
         recognizer - an instance of MPPalmDet
         image      - a single image read using cv.imread
-        faces      - the return of detect_palm
+        palms      - the return of detect_palm
 
     Returns:
         features   - a length-n list of extracted features. If n = 0, return an empty list.
     '''
     features = []
     ### TODO: your code starts here
+    for palm in palms:
 
+        # Isolate the image region containing the palm
+        bbox, landmarks, _ = get_palm_params(palm)
+        palm_image = image[bbox[0]: bbox[2] + 1, bbox[1]: bbox[3] + 1]
+        if palm_image.size == 0:
+            continue
+
+        palm_image_gray = cv.cvtColor(palm_image, cv.COLOR_BGR2GRAY)
+        palm_image_gray = cv.resize(palm_image_gray, recognizer.winSize)
+        #feature = recognizer.compute(palm_image_gray)
+        feature = hog(palm_image_gray, pixels_per_cell=(16,16), cells_per_block=(2,2), visualize= False)
+        features.append(feature)
     # TODO Check if is valid
     ### your code ends here
-    return features
+    return np.array(features)
 
 def match(recognizer, feature1, feature2, dis_type=1):
     ''' Calculate the distatnce/similarity of the given feature1 and feature2.
@@ -90,9 +103,18 @@ def match(recognizer, feature1, feature2, dis_type=1):
     cosine_threshold = 0.363
     isMatched = False
     ### TODO: your code starts here
-
+    if dis_type == 0:  # cosine
+        dist = np.dot(feature1, feature2) / (np.linalg.norm(feature1) * np.linalg.norm(feature2))
+        if dist < cosine_threshold:
+            isMatched = True
+    elif dis_type == 1: # l2 distance
+        dist = np.sqrt(np.sum(feature1 ** 2  - feature2 ** 2))
+        if dist < l2_threshold:
+            isMatched = True
+    else:
+        raise ValueError(f'{dis_type} is not valid')
     ### your code ends here
-    return isMatched
+    return isMatched, dist
 
 def load_database(database_path, detector, recognizer):
     ''' Load database from the given database_path into a dictionary. It tries to load extracted features first, and call detect_palm & extract_feature to get features from images (*.jpg, *.png).
@@ -121,8 +143,8 @@ def load_database(database_path, detector, recognizer):
             identity = filename[:-4]
             if identity not in db_features:
                 image = cv.imread(os.path.join(database_path, filename))
-                faces = detect_palm(detector, image)
-                features = [] #extract_feature(recognizer, image, faces)
+                palms = detect_palm(detector, image)
+                features = extract_feature(recognizer, image, palms)
                 if len(features) > 0:
                     db_features[identity] = features[0]
                     np.save(os.path.join(database_path, '{}.npy'.format(identity)), features[0])
@@ -136,23 +158,21 @@ def visualize(image, palms, identities, valids, fps, valid_box_color=(0, 255, 0)
     # put fps in top-left corner
     cv.putText(output, 'FPS: {:.2f}'.format(fps), (0, 15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
-    for palm_landmarks, identity, valid in zip(palms, identities, valids):
+    for palm, identity, valid in zip(palms, identities, valids):
 
         # draw bounding box
-        bbox = palm_landmarks[0:4].astype(np.int32)
-        palm_rot = palm_landmarks[-1]
+        bbox, palm_landmarks, palm_rot = get_palm_params(palm)
+        #bbox = palm[0:4].astype(np.int32)
 
         if valid:
             cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), non_valid_box_color, 2)
             # Prompt the user to put the hand toward the camera
-            cv.putText(output, 'Put hand vertically, {}'.format(palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+            cv.putText(output, 'Put hand vertically', (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
         else:
             cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), valid_box_color, 2)
             # put identity
-            cv.putText(output, '{} {}'.format(identity, palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+            cv.putText(output, '{}'.format(identity), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
         # draw points
-        #palm_landmarks = palm_landmarks[4:-2].astype(np.int32)
-        #palm_landmarks = palm_landmarks.reshape(-1, 2)
         #cv.line(output, palm_landmarks[1], palm_landmarks[4], (0, 0, 255), 2) # TODO Add a color
         #for p in palm_landmarks:
         #    cv.circle(output, p, 2, (0, 0, 255), 2) # TODO Add a color
@@ -171,8 +191,22 @@ if __name__ == '__main__':
                       scoreThreshold=args.score_threshold,
                       backendId=backend_id,
                       targetId=target_id)
-    # Initialize FaceRecognizerSF
-    recognizer = lambda x: x #cv.FaceRecognizerSF.create(''' parameters for initialization ''')
+    # Initialize Palmprint recognizer (HOG features)
+    hog_params = {
+                    'cell_size': (2, 2),      # h x w in pixels
+                    'block_size': (16, 16),         # h x w in cells
+                    'win_size': (64, 64),
+                    'num_bins': 8
+                }
+    recognizer = cv.HOGDescriptor(
+                            _winSize=(hog_params['win_size'][1] * hog_params['cell_size'][1],
+                                    hog_params['win_size'][0] * hog_params['cell_size'][0]),
+                            _blockSize=(hog_params['block_size'][1] * hog_params['cell_size'][1],
+                                        hog_params['block_size'][0] * hog_params['cell_size'][0]),
+                            _blockStride=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
+                            _cellSize=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
+                            _nbins=hog_params['num_bins']
+                        )
 
     # Load database
     database = load_database(args.database_dir, detector, recognizer)
@@ -196,26 +230,41 @@ if __name__ == '__main__':
         # detect palms
         palms = detect_palm(detector, frame)
         # extract features
-        features = palms #extract_feature(recognizer, frame, faces)
+        features = extract_feature(recognizer, frame, palms)
         # match detected faces with database
         identities = []
         valids = []
         for feature in features:
             isMatched = False
             isValid = False
+            cand_identity = None
+            cand_identity_dist = None
 
             # Check that hand rotation is within allowed range
             if np.abs(feature[-1]) > rot_threshold:
                 isValid = True
+
+                # Match palmprint with all the palmsprints in the database, and keep the closest one
+                for identity, db_feature in database.items():
+                    anyMatched, dist = match(recognizer, feature, db_feature)
+                    if anyMatched:
+                        if cand_identity_dist is None or dist < cand_identity_dist:
+                            cand_identity = identity
+                            cand_identity_dist = dist
+                        isMatched = True
+                identities.append(cand_identity)
+                
             valids.append(isValid)
-            """for identity, db_feature in database.items():
-                isMatched = match(recognizer, feature, db_feature)
-                if isMatched:
-                    identities.append(identity)
-                    break"""
             if not isMatched:
                 identities.append('Unknown')
         tm.stop()
+
+        """# Save new identity mode
+        if key == ord('s'):
+            if len(features) == 1:
+                new_name = prompt_text_user('Please enter identity\'s name: ')
+
+                if new_name:"""
 
         # Draw results on the input image
         frame = visualize(frame, palms, identities, valids, tm.getFPS())

@@ -15,6 +15,7 @@ def palm_rots(palms_landmarks)-> np.array:
     l_last = palms_landmarks[:, -1]  # Last landmark
 
     v_little_index = l_little - l_index
+    v_little_index[:, 0] = np.abs(v_little_index[:, 0]) # Take vector always in positive magnitude
 
     # Palm rotation: Rotation of vector l_little, l_index (2D)
     palm_rot = np.arctan2(v_little_index[:, 1], v_little_index[:, 0])
@@ -36,3 +37,30 @@ def palm_rots(palms_landmarks)-> np.array:
     slope_r = d / palm_width"""
 
     return palm_rot
+
+def get_palm_params(palm):
+
+    """Retrieve the palm landmarks, the bbox containing a palm, and the palm rot
+        from the raw palm parameters
+    """
+
+    palm_landmarks = palm[4:-2].astype(np.int32).reshape(-1, 2)
+    palm_bbox = [palm_landmarks[:, 0].min(),
+              palm_landmarks[:, 1].min(),
+              palm_landmarks[:, 0].max(),
+              palm_landmarks[:, 1].max(),] # [x1, y1, x2, y2]
+    palm_rot = palm[-1]
+
+    return palm_bbox, palm_landmarks, palm_rot
+
+def prompt_text_user(prompt: str):
+
+  """Creates a terminal prompt to tell the user to enter a text
+    Args:
+    ----
+    prompt: str
+      Prompt to show the user
+  """
+  print(f'{prompt}: ', end=' ')
+  input_data = input()
+  return input_data
