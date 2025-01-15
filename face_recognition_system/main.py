@@ -4,8 +4,8 @@ import argparse
 import numpy as np
 import cv2 as cv
 
-import opencv_zoo.models as cv_models # TODO Put this more correct
-from utils import palm_rots, get_palm_params, prompt_text_user
+import opencv_zoo.models as cv_models
+from utils import palm_rots, get_palm_params
 
 # Valid combinations of backends and targets
 backend_target_pairs = [
@@ -19,7 +19,6 @@ backend_target_pairs = [
 parser = argparse.ArgumentParser()
 parser.add_argument('--database_dir', '-db', type=str, default='./database')
 parser.add_argument('--palm_detection_model', '-fd', type=str, default='./palm_detection_mediapipe_2023feb.onnx')
-#parser.add_argument('--face_recognition_model', '-fr', type=str, required=True)
 parser.add_argument('--backend_target', '-bt', type=int, default=0,
                     help='''Choose one of the backend-target pair to run this demo:
                         {:d}: (default) OpenCV implementation + CPU,
@@ -32,8 +31,6 @@ parser.add_argument('--score_threshold', type=float, default=0.8,
                     help='Usage: Set the minimum needed confidence for the model to identify a palm, defaults to 0.8. Smaller values may result in faster detection, but will limit accuracy. Filter out faces of confidence < conf_threshold. An empirical score threshold for the quantized model is 0.49.')
 parser.add_argument('--nms_threshold', type=float, default=0.3,
                     help='Usage: Suppress bounding boxes of iou >= nms_threshold. Default = 0.3.')
-parser.add_argument('--rot_threshold', type=float, default=0.2,
-                    help='Usage: Maximum hand rotation allowed (radians). Default = 0.2.')
 args = parser.parse_args()
 
 def detect_palm(detector, image):
@@ -99,7 +96,7 @@ def match(recognizer, feature1, feature2, dis_type=1):
     Returns:
         isMatched  - True if feature1 and feature2 are the same identity; False if different
     '''
-    l2_threshold = 100 #1.128
+    l2_threshold = 2 #1.128
     cosine_threshold = 0.363
     isMatched = False
     ### TODO: your code starts here
@@ -152,33 +149,20 @@ def load_database(database_path, detector, recognizer):
     print('Database: {} loaded in total, {} loaded from .npy, {} loaded from images.'.format(cnt, npy_cnt, cnt-npy_cnt))
     return db_features
 
-def visualize(image, palms, identities, valids, fps, valid_box_color=(0, 255, 0), non_valid_box_color=(0, 165, 255), text_color=(0, 0, 255)):
+def visualize(image, palms, identities, fps, box_color=(0, 255, 0), text_color=(0, 0, 255)):
     output = image.copy()
 
     # put fps in top-left corner
     cv.putText(output, 'FPS: {:.2f}'.format(fps), (0, 15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
-    for palm, identity, valid in zip(palms, identities, valids):
+    for palm, identity in zip(palms, identities):
 
         # draw bounding box
         bbox, palm_landmarks, palm_rot = get_palm_params(palm)
-        #bbox = palm[0:4].astype(np.int32)
 
-        if not valid:
-            cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), non_valid_box_color, 2)
-            # Prompt the user to put the hand toward the camera
-            cv.putText(output, 'Put hand vertically', (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
-        else:
-            cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), valid_box_color, 2)
-            # put identity
-            cv.putText(output, '{}'.format(identity), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
-        # draw points
-        #cv.line(output, palm_landmarks[1], palm_landmarks[4], (0, 0, 255), 2) # TODO Add a color
-        #for p in palm_landmarks:
-        #    cv.circle(output, p, 2, (0, 0, 255), 2) # TODO Add a color
-
-        # Compute stats
-        #cv.putText(output, 'rot: {}'.format(palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+        cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), box_color, 2)
+        # put identity
+        cv.putText(output, '{}'.format(identity), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
     return output
 
@@ -198,15 +182,7 @@ if __name__ == '__main__':
                     'win_size': (128, 128),
                     'num_bins': 8
                 }
-    """recognizer = cv.HOGDescriptor(
-                            _winSize=(hog_params['win_size'][1] * hog_params['cell_size'][1],
-                                    hog_params['win_size'][0] * hog_params['cell_size'][0]),
-                            _blockSize=(hog_params['block_size'][1] * hog_params['cell_size'][1],
-                                        hog_params['block_size'][0] * hog_params['cell_size'][0]),
-                            _blockStride=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
-                            _cellSize=(hog_params['cell_size'][1], hog_params['cell_size'][0]),
-                            _nbins=hog_params['num_bins']
-                        )"""
+
     recognizer = cv.HOGDescriptor(
                             _winSize=(hog_params['win_size'][1],
                                     hog_params['win_size'][0]),
@@ -225,7 +201,6 @@ if __name__ == '__main__':
     cap = cv.VideoCapture(device_id)
     w = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-    rot_threshold = args.rot_threshold
 
     # Real-time face recognition
     tm = cv.TickMeter()
@@ -242,29 +217,22 @@ if __name__ == '__main__':
         features = extract_feature(recognizer, frame, palms)
         # match detected faces with database
         identities = []
-        valids = []
+
         for palm, feature in zip(palms, features):
             isMatched = False
             isValid = False
             cand_identity = None
             cand_identity_dist = None
 
-            # Check that hand rotation is within allowed range
-            if True: #np.abs(palm[-1]) < rot_threshold:
-                print(np.abs(palm[-1]))
-                isValid = True
-
-                # Match palmprint with all the palmsprints in the database, and keep the closest one
-                for identity, db_feature in database.items():
-                    anyMatched, dist = match(recognizer, feature, db_feature)
-                    print(f'identity: {identity}, dist: {dist}')
-                    if anyMatched:
-                        if (cand_identity_dist is None) or (dist < cand_identity_dist):
-                            cand_identity = identity
-                            cand_identity_dist = dist
-                        isMatched = True
+            # Match palmprint with all the palmsprints in the database, and keep the closest one
+            for identity, db_feature in database.items():
+                anyMatched, dist = match(recognizer, feature, db_feature)
+                if anyMatched:
+                    if (cand_identity_dist is None) or (dist < cand_identity_dist):
+                        cand_identity = identity
+                        cand_identity_dist = dist
+                    isMatched = True
                 
-            valids.append(isValid)
             if not isMatched:
                 identities.append('Unknown')
             else:
@@ -272,7 +240,7 @@ if __name__ == '__main__':
         tm.stop()
 
         # Draw results on the input image
-        frame = visualize(frame, palms, identities, valids, tm.getFPS())
+        frame = visualize(frame, palms, identities, tm.getFPS())
 
         # Visualize results in a new Window
         cv.imshow('Face recognition system', frame)
