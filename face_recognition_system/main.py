@@ -5,6 +5,7 @@ import numpy as np
 import cv2 as cv
 
 import opencv_zoo.models as cv_models # TODO Put this more correct
+from utils import palm_rots
 
 # Valid combinations of backends and targets
 backend_target_pairs = [
@@ -31,6 +32,8 @@ parser.add_argument('--score_threshold', type=float, default=0.8,
                     help='Usage: Set the minimum needed confidence for the model to identify a palm, defaults to 0.8. Smaller values may result in faster detection, but will limit accuracy. Filter out faces of confidence < conf_threshold. An empirical score threshold for the quantized model is 0.49.')
 parser.add_argument('--nms_threshold', type=float, default=0.3,
                     help='Usage: Suppress bounding boxes of iou >= nms_threshold. Default = 0.3.')
+parser.add_argument('--rot_threshold', type=float, default=0.2,
+                    help='Usage: Maximum hand rotation allowed (radians). Default = 0.2.')
 args = parser.parse_args()
 
 def detect_palm(detector, image):
@@ -46,6 +49,10 @@ def detect_palm(detector, image):
     palms = []
     ### TODO: your code starts here
     palms = detector.infer(image) # [x1, y1, x2, y2, landmarks...]
+    if palms.size > 0:
+        palms_landmarks = palms[:, 4:-1].reshape(len(palms), -1, 2)
+        rot = palm_rots(palms_landmarks)
+        palms = np.concatenate((palms, rot[..., np.newaxis]), axis=1)
     ### your code ends here
     return palms
 
@@ -123,24 +130,35 @@ def load_database(database_path, detector, recognizer):
     print('Database: {} loaded in total, {} loaded from .npy, {} loaded from images.'.format(cnt, npy_cnt, cnt-npy_cnt))
     return db_features
 
-def visualize(image, palms, identities, fps, box_color=(0, 255, 0), text_color=(0, 0, 255)):
+def visualize(image, palms, identities, valids, fps, valid_box_color=(0, 255, 0), non_valid_box_color=(0, 165, 255), text_color=(0, 0, 255)):
     output = image.copy()
 
     # put fps in top-left corner
     cv.putText(output, 'FPS: {:.2f}'.format(fps), (0, 15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
-    for palm_landmarks, identity in zip(palms, identities):
+    for palm_landmarks, identity, valid in zip(palms, identities, valids):
+
         # draw bounding box
         bbox = palm_landmarks[0:4].astype(np.int32)
-        cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), box_color, 2)
-        # draw points
-        palm_landmarks = palm_landmarks[4:-1].astype(np.int32)
-        palm_landmarks = palm_landmarks.reshape(-1, 2)
+        palm_rot = palm_landmarks[-1]
 
-        for p in palm_landmarks:
-            cv.circle(output, p, 2, (0, 0, 255), 2) # TODO Add a color
-        # put identity
-        cv.putText(output, '{}'.format(identity), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+        if valid:
+            cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), non_valid_box_color, 2)
+            # Prompt the user to put the hand toward the camera
+            cv.putText(output, 'Put hand vertically, {}'.format(palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+        else:
+            cv.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), valid_box_color, 2)
+            # put identity
+            cv.putText(output, '{} {}'.format(identity, palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
+        # draw points
+        #palm_landmarks = palm_landmarks[4:-2].astype(np.int32)
+        #palm_landmarks = palm_landmarks.reshape(-1, 2)
+        #cv.line(output, palm_landmarks[1], palm_landmarks[4], (0, 0, 255), 2) # TODO Add a color
+        #for p in palm_landmarks:
+        #    cv.circle(output, p, 2, (0, 0, 255), 2) # TODO Add a color
+
+        # Compute stats
+        #cv.putText(output, 'rot: {}'.format(palm_rot), (bbox[0], bbox[1]-15), cv.FONT_HERSHEY_DUPLEX, 0.5, text_color)
 
     return output
 
@@ -164,6 +182,7 @@ if __name__ == '__main__':
     cap = cv.VideoCapture(device_id)
     w = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+    rot_threshold = args.rot_threshold
 
     # Real-time face recognition
     tm = cv.TickMeter()
@@ -174,14 +193,21 @@ if __name__ == '__main__':
             break
 
         tm.start()
-        # detect faces
+        # detect palms
         palms = detect_palm(detector, frame)
         # extract features
         features = palms #extract_feature(recognizer, frame, faces)
         # match detected faces with database
         identities = []
+        valids = []
         for feature in features:
             isMatched = False
+            isValid = False
+
+            # Check that hand rotation is within allowed range
+            if np.abs(feature[-1]) > rot_threshold:
+                isValid = True
+            valids.append(isValid)
             """for identity, db_feature in database.items():
                 isMatched = match(recognizer, feature, db_feature)
                 if isMatched:
@@ -192,7 +218,7 @@ if __name__ == '__main__':
         tm.stop()
 
         # Draw results on the input image
-        frame = visualize(frame, palms, identities, tm.getFPS())
+        frame = visualize(frame, palms, identities, valids, tm.getFPS())
 
         # Visualize results in a new Window
         cv.imshow('Face recognition system', frame)
